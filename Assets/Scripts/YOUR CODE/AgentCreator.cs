@@ -12,16 +12,6 @@ public class AgentCreator
 		typeof(AllyAgent),
 		typeof(AllyAgent),
 		typeof(AllyAgent),
-		typeof(AllyAgent),
-		typeof(AllyAgent),
-		typeof(AllyAgent),
-		typeof(AllyAgent),
-		typeof(AllyAgent),
-		typeof(AllyAgent),
-		typeof(AllyAgent),
-		typeof(AllyAgent),
-		typeof(AllyAgent),
-		typeof(AllyAgent),
 		typeof(AllyAgent)
 	};
 }

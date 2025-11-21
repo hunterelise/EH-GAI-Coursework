@@ -1,59 +1,60 @@
+using System;
 using UnityEngine;
 
 public class AllyAgent : SteeringAgent
 {
-	private Attack.AttackType attackType = Attack.AttackType.AllyGun;
+    private Attack.AttackType attackType;
+    private EnemyDetector enemyDetector;
+    private ChaseEnemy chaseEnemy;
+    public static AllyAgent Leader;
+    public bool IsLeader => this == Leader;
 
-	protected override void InitialiseFromAwake()
-	{
-		gameObject.AddComponent<SeekToMouse>();
-	}
 
-	protected override void CooperativeArbitration()
-	{
-		base.CooperativeArbitration();
+    protected override void InitialiseFromAwake()
+    {
+        enemyDetector = gameObject.AddComponent<EnemyDetector>(); // detect enemies
+        chaseEnemy = gameObject.AddComponent<ChaseEnemy>();       // move towards enemies
 
-		if (Input.GetKeyDown(KeyCode.Alpha1))
-		{
-			attackType = Attack.AttackType.Melee;
-		}
-		if (Input.GetKeyDown(KeyCode.Alpha2))
-		{
-			attackType = Attack.AttackType.AllyGun;
-		}
-		if (Input.GetKeyDown(KeyCode.Alpha3))
-		{
-			attackType = Attack.AttackType.Rocket;
-		}
-		if (Input.GetKey(KeyCode.Space))
-		{
-			if(attackType == Attack.AttackType.Rocket && GameData.Instance.AllyRocketsAvailable <= 0)
-			{
-				attackType = Attack.AttackType.AllyGun;
-			}
+        int index = Array.IndexOf(AgentCreator.AllySteeringAgentTypes, typeof(AllyAgent));
 
-			AttackWith(attackType);
-		}
-		if(Input.GetMouseButtonDown(1))
-		{
-			SteeringVelocity = Vector3.zero;
-			CurrentVelocity = Vector3.zero;
-			var seekToMouse = GetComponent<SeekToMouse>();
-			seekToMouse.enabled = !seekToMouse.enabled;
-		}
-	}
+        // first ally becomes leader, others follow
+        if (index == 0)
+        {
+            gameObject.AddComponent<GroupLeader>();
+        }
+        else
+        {
+            gameObject.AddComponent<GroupFollow>();
+        }
 
-	protected override void UpdateDirection()
-	{
-		if (GetComponent<SeekToMouse>().enabled)
-		{
-			base.UpdateDirection();
-		}
-		else
-		{
-			var mouseInWorld = Camera.main.ScreenToWorldPoint(Input.mousePosition);
-			mouseInWorld.z = 0.0f;
-			transform.up = Vector3.Normalize(mouseInWorld - transform.position);
-		}
-	}
+        gameObject.AddComponent<Cohesion>();   // stay close to group
+        gameObject.AddComponent<Separation>(); // avoid crowding
+
+        enemyDetector.enabled = true;
+        chaseEnemy.enabled = true;
+    }
+
+    protected override void CooperativeArbitration()
+    {
+        base.CooperativeArbitration();
+        AutoPickWeaponAndAttack(); // attack if enemy in sight
+    }
+
+    private void AutoPickWeaponAndAttack()
+    {
+        var target = enemyDetector.TargetAgent;
+        if (target == null) return;
+
+        float dist = Vector3.Distance(transform.position, target.transform.position);
+
+        // choose weapon based on distance
+        if (dist < 2f)
+            attackType = Attack.AttackType.Melee;
+        else if (dist > 10f && GameData.Instance.AllyRocketsAvailable > 0)
+            attackType = Attack.AttackType.Rocket;
+        else
+            attackType = Attack.AttackType.AllyGun;
+
+        AttackWith(attackType); // perform attack
+    }
 }
