@@ -1,15 +1,24 @@
 using UnityEngine;
 
-// This behaviour gently pushes allies apart so they don’t stand on top of each other.
-// It’s kept weak so it won’t ruin the overall formation.
+/// <summary>
+/// Steering behaviour that prevents allies from overlapping.
+/// Produces a repelling force when other allies get too close.
+/// </summary>
 public sealed class AllySeparationBehaviour : SteeringBehaviour
 {
-    [Tooltip("How close another ally can be before we start pushing away")]
-    public float separationRadius = 0.9f;   // Slightly smaller than before
+    [Tooltip("Distance within which other allies start pushing us away.")]
+    public float separationRadius = 1.2f;
 
-    [Tooltip("How strong the push-away force is")]
-    public float separationWeight = 0.4f;   // Lower so it doesn't break formations
+    [Tooltip("Strength multiplier applied to the separation force.")]
+    public float separationWeight = 1.0f;
 
+    /// <summary>
+    /// Computes the steering force needed to push this ally away
+    /// from nearby allies inside the separation radius.
+    ///
+    /// This does not move the agent directly; it only returns a steering
+    /// velocity that is blended with other steering behaviours inside the agent.
+    /// </summary>
     public override Vector3 UpdateBehaviour(SteeringAgent steeringAgent)
     {
         var allies = GameData.Instance.allies;
@@ -18,27 +27,31 @@ public sealed class AllySeparationBehaviour : SteeringBehaviour
         int count = 0;
         float radiusSq = separationRadius * separationRadius;
 
+        // Check all allies and find which ones are too close.
         foreach (var other in allies)
         {
-            // Skip invalid allies and ignore ourselves
+            // Skip invalid or dead allies, and skip ourselves.
             if (other == null || other == steeringAgent || other.Health <= 0.0f)
                 continue;
 
-            // Direction from the other ally to us
             Vector3 diff = steeringAgent.transform.position - other.transform.position;
             float sqrDist = diff.sqrMagnitude;
 
-            // If they’re close enough, calculate how much we should push away
+            // Only react to allies inside the separation radius.
             if (sqrDist > 0.0001f && sqrDist < radiusSq)
             {
-                // The closer we are, the stronger the push
-                float strength = (radiusSq - sqrDist) / radiusSq;
+                float dist = Mathf.Sqrt(sqrDist);
+
+                // Strength becomes stronger as the other ally is closer.
+                float strength = 1f - (dist / separationRadius);
+
+                // Add a repelling direction away from the other ally.
                 force += diff.normalized * strength;
                 count++;
             }
         }
 
-        // If nobody is close, do nothing
+        // No allies close enough to require separation.
         if (count == 0)
         {
             desiredVelocity = Vector3.zero;
@@ -46,10 +59,9 @@ public sealed class AllySeparationBehaviour : SteeringBehaviour
             return steeringVelocity;
         }
 
-        // Average out the push force
+        // Average the repelling force from all nearby allies.
         force /= count;
 
-        // If the force is basically nothing, stop here
         if (force.sqrMagnitude < 0.0001f)
         {
             desiredVelocity = Vector3.zero;
@@ -57,13 +69,12 @@ public sealed class AllySeparationBehaviour : SteeringBehaviour
             return steeringVelocity;
         }
 
-        // Aim to move in the separation direction at max speed
-        force = force.normalized * SteeringAgent.MaxCurrentSpeed;
-        desiredVelocity = force;
+        // Desired movement is away from nearby allies at full speed.
+        desiredVelocity = force.normalized * SteeringAgent.MaxCurrentSpeed;
 
-        // Apply a small weight so this only prevents overlap,
-        // and doesn’t overpower the main formation movement
+        // Steering velocity is scaled by separationWeight.
         steeringVelocity = (desiredVelocity - steeringAgent.CurrentVelocity) * separationWeight;
+
         return steeringVelocity;
     }
 }

@@ -3,7 +3,7 @@ using UnityEngine;
 public class TestingVariables : MonoBehaviour
 {
 	/// <summary>If >= 0 then the specified seed will be used for terrain generation rather than the normal algorithms</summary>
-	public const int TerrainSeed = 3;
+	public const int TerrainSeed = 0;
 
 	/// <summary>If >= 0 then the specified seed will be used for unit locations rather than the normal algorithms</summary>
 	public const int LocationsSeed = -1;
@@ -23,7 +23,7 @@ public class TestingVariables : MonoBehaviour
 	public static readonly Color ColourSnow = Color.white;
 	public static readonly Color ColourUnknown = Color.magenta;
 	public static readonly Color ColourInvalid = Color.black;
-	public static readonly Color ColourAlly = Color.cyan;
-	public static readonly Color ColourEnemy = Color.red;
+	public static readonly Color ColourAlly = Color.magenta;
+	public static readonly Color ColourEnemy = Color.yellow;
 
 }

@@ -1,10 +1,10 @@
-using UnityEngine;
+ï»¿using UnityEngine;
 
 /// <summary>
-/// This is the ally’s “brain.”
-/// It chooses what state the ally should be in,
-/// Who the ally should target,
-/// And which attack type the ally prefers.
+/// Finite state machine for an ally.
+/// - Chooses state (Idle, FollowLeader, Attack, Regroup).
+/// - Picks a target.
+/// - Selects an attack type, with rockets reserved for large nearby groups.
 /// </summary>
 [RequireComponent(typeof(AllyAgent))]
 public class AllyFSM : MonoBehaviour
@@ -16,42 +16,57 @@ public class AllyFSM : MonoBehaviour
     public AllyRole Role = AllyRole.Support;
     public AllyState State = AllyState.FollowLeader;
 
-    // These are the decisions this brain gives to AllyAgent
+    /// <summary>
+    /// Target this ally will act against (movement + attacking).
+    /// </summary>
     public SteeringAgent CurrentTarget { get; private set; }
-    public Attack.AttackType CurrentAttackType { get; private set; } = Attack.AttackType.None;
 
     /// <summary>
-    /// Main decision-making function.
-    /// Called every update by AllyAgent.
+    /// Attack type this ally prefers right now (chosen by the FSM).
+    /// </summary>
+    public Attack.AttackType CurrentAttackType { get; private set; } = Attack.AttackType.None;
+
+    // Rocket / threat tuning
+    private const float ROCKET_CLUSTER_RADIUS = 4.5f; // Radius around target to count a cluster for rockets.
+    private const float LOCAL_THREAT_RADIUS = 6.0f;   // Radius around self to measure how surrounded we are.
+    private const int ROCKET_MIN_CLUSTER = 4;         // Minimum enemies near target before rockets are considered.
+    private const int ROCKET_LOW_AMMO = 2;            // Rockets considered "low" at or below this value.
+
+    /// <summary>
+    /// Main decision function called once per update by AllyAgent.
+    /// Decides:
+    /// - State (Attack vs FollowLeader vs Regroup).
+    /// - Target.
+    /// - Preferred attack type.
     /// </summary>
     public void Tick(AllyAgent agent)
     {
-        // If we're regrouping, stay in this state until we reach the regroup point
+        // Regroup state: move back into formation first, no active targeting.
         if (State == AllyState.Regroup)
         {
             var squad = AllySquadManager.Instance;
             if (squad != null)
             {
-                float dist = (agent.transform.position - squad.RegroupPoint).magnitude;
+                Vector3 slot = squad.GetFormationPositionFor(agent);
+                float dist = (agent.transform.position - slot).magnitude;
 
-                // Close enough — go back to following the leader
-                if (dist < 2.0f)
+                // Once close to our formation slot, return to normal following behaviour.
+                if (dist < 0.6f)
                 {
                     State = AllyState.FollowLeader;
                 }
             }
 
-            // No target while regrouping
             CurrentTarget = null;
             CurrentAttackType = Attack.AttackType.None;
             return;
         }
 
-        // Try to pick the closest living enemy
+        // Find the closest living enemy to this agent.
         var enemies = GameData.Instance.enemies;
         CurrentTarget = SteeringAgent.GetNearestAgent(agent.transform.position, enemies);
 
-        // If no target is found, just follow the leader
+        // No valid target then just follow the leader.
         if (CurrentTarget == null || CurrentTarget.Health <= 0.0f)
         {
             State = AllyState.FollowLeader;
@@ -59,19 +74,28 @@ public class AllyFSM : MonoBehaviour
             return;
         }
 
-        Vector3 diff = CurrentTarget.transform.position - agent.transform.position;
-        float distance = diff.magnitude;
+        Vector3 toTarget = CurrentTarget.transform.position - agent.transform.position;
+        float distanceToTarget = toTarget.magnitude;
 
-        // Count how many enemies are crowding around this ally
-        int nearbyEnemies = CountEnemiesNear(agent.transform.position, 10.0f);
+        // Enemies around the target (used for rocket "cluster" decisions).
+        int enemiesNearTarget = CountEnemiesNear(CurrentTarget.transform.position, ROCKET_CLUSTER_RADIUS);
 
-        // Pick which attack we ideally want to use
-        CurrentAttackType = ChooseAttackType(distance, nearbyEnemies);
+        // Enemies around this ally (used for deciding how safe we are).
+        int enemiesNearSelf = CountEnemiesNear(agent.transform.position, LOCAL_THREAT_RADIUS);
 
-        // If we're close enough for the weapon, attack.
-        // Otherwise, move closer / follow the leader.
+        // Choose an attack type based on distance, enemy counts, and role.
+        CurrentAttackType = ChooseAttackType(
+            distanceToTarget,
+            enemiesNearTarget,
+            enemiesNearSelf,
+            Role
+        );
+
         float effectiveRange = GetRangeFor(CurrentAttackType);
-        if (distance <= effectiveRange * 0.9f)
+
+        // If we are in range for the chosen weapon, switch to Attack.
+        // Otherwise keep moving / following.
+        if (distanceToTarget <= effectiveRange * 0.9f)
         {
             State = AllyState.Attack;
         }
@@ -82,8 +106,8 @@ public class AllyFSM : MonoBehaviour
     }
 
     /// <summary>
-    /// Counts how many enemies are within a certain radius.
-    /// More enemies = ally acts more aggressively.
+    /// Counts how many enemies are within a given radius of a position.
+    /// Used for both rocket cluster checks and local threat checks.
     /// </summary>
     private int CountEnemiesNear(Vector3 position, float radius)
     {
@@ -92,94 +116,99 @@ public class AllyFSM : MonoBehaviour
 
         foreach (var enemy in GameData.Instance.enemies)
         {
-            if (enemy == null || enemy.Health <= 0.0f) continue;
+            if (enemy == null || enemy.Health <= 0.0f)
+                continue;
 
             float dSq = (enemy.transform.position - position).sqrMagnitude;
             if (dSq <= radiusSq)
-            {
                 count++;
-            }
         }
 
         return count;
     }
 
     /// <summary>
-    /// Decides which type of attack the ally prefers right now,
-    /// based on how far the enemy is and how many enemies are nearby.
+    /// Chooses an attack type based on:
+    /// - Distance to the target.
+    /// - How many enemies are near the target (cluster size).
+    /// - How many enemies are near this ally (local danger).
+    /// - This ally's role (Leader / Flanker / Support).
+    /// Rockets are only allowed for decent-sized clusters and sensible ranges.
     /// </summary>
-    private Attack.AttackType ChooseAttackType(float distance, int nearbyEnemies)
+    private Attack.AttackType ChooseAttackType(
+        float distToTarget,
+        int enemiesNearTarget,
+        int enemiesNearSelf,
+        AllyRole role)
     {
-        // Base scores
-        float meleeScore = 0f;
-        float rocketScore = 0f;
-        float gunScore = 0.1f; // gun is always "okay"
-
-        // Melee
         float meleeRange = Attack.MeleeData.range;
-        if (distance <= meleeRange * 1.5f)    // a bit more generous than before
-        {
-            meleeScore = 1.0f;                // strong baseline for close distance
-
-            // Extra reward if we are really close
-            if (distance <= meleeRange * 0.8f)
-                meleeScore += 0.5f;
-
-            // Extra reward if there are many enemies nearby
-            if (nearbyEnemies >= 3)
-                meleeScore += 0.5f;
-        }
-
-        // Rocket
         float rocketRange = Attack.RocketData.range;
-
-        // Allow rockets from a bit closer and up to full range
-        if (GameData.Instance.AllyRocketsAvailable > 0 &&
-            distance >= 4.0f &&
-            distance <= rocketRange)
-        {
-            rocketScore = 0.8f; // good baseline
-
-            // More enemies around -> more reason to use rockets
-            if (nearbyEnemies > 1)
-            {
-                rocketScore += Mathf.Clamp01((nearbyEnemies - 1) * 0.25f); // up to +0.75
-            }
-
-            // Slightly prefer rockets at mid-range
-            float mid = rocketRange * 0.5f;
-            float t = 1f - Mathf.Clamp01(Mathf.Abs(distance - mid) / mid);
-            rocketScore += t * 0.5f; // up to +0.5 for "perfect" rocket distance
-        }
-
-        // Gun
         float gunRange = Attack.AllyGunData.range;
-        if (distance <= gunRange)
+
+        int rocketsLeft = GameData.Instance.AllyRocketsAvailable;
+        bool hasRockets = rocketsLeft > 0;
+        bool lowAmmo = rocketsLeft <= ROCKET_LOW_AMMO;
+
+        // Conditions under which rockets are allowed.
+        bool bigCluster = enemiesNearTarget >= ROCKET_MIN_CLUSTER;
+        bool veryBigCluster = enemiesNearTarget >= ROCKET_MIN_CLUSTER + 2; // Extra large group.
+        bool notPointBlank = distToTarget >= meleeRange * 1.8f;           // Avoid rockets at melee range.
+        bool notAcrossMap = distToTarget <= rocketRange * 0.75f;          // Avoid long-range rocket sniping.
+        bool goodRocketBand = notPointBlank && notAcrossMap;
+
+        bool shouldConsiderRockets =
+            hasRockets &&
+            bigCluster &&
+            goodRocketBand &&
+            (!lowAmmo || veryBigCluster); // If ammo is low, only spend it on very large clusters.
+
+        // 1) Rockets: only if strict conditions are met, and behaviour depends on role.
+        if (shouldConsiderRockets)
         {
-            gunScore += 0.7f; // fairly strong, but can be beaten by melee/rocket in ideal spots
+            switch (role)
+            {
+                case AllyRole.Support:
+                    // Supports are primary rocket users.
+                    return Attack.AttackType.Rocket;
+
+                case AllyRole.Leader:
+                    // Leader avoids rockets when personally surrounded.
+                    if (enemiesNearSelf <= 2)
+                        return Attack.AttackType.Rocket;
+                    break;
+
+                case AllyRole.Flanker:
+                    // Flankers are more melee / gun focused. Only rocket if far enough and not threatened.
+                    if (distToTarget > meleeRange * 2.5f && enemiesNearSelf == 0)
+                        return Attack.AttackType.Rocket;
+                    break;
+            }
         }
 
-        // If everything somehow ended up with zero, just use the gun
-        if (meleeScore <= 0f && rocketScore <= 0f && gunScore <= 0f)
+        // 2) Melee: used at close range, but not into huge crowds (those are better for guns/rockets).
+        if (distToTarget <= meleeRange * 1.1f)
+        {
+            // Flankers prefer melee when the fight is small/medium.
+            if (role == AllyRole.Flanker && enemiesNearTarget <= 3)
+                return Attack.AttackType.Melee;
+
+            // Leader and Support melee only when the group is small.
+            if (enemiesNearTarget <= 2)
+                return Attack.AttackType.Melee;
+        }
+
+        // 3) Gun: default choice inside gun range.
+        if (distToTarget <= gunRange)
             return Attack.AttackType.AllyGun;
 
-        // Weighted random choice
-        float total = meleeScore + rocketScore + gunScore;
-        float r = Random.value * total;
-
-        if (r < meleeScore)
-            return Attack.AttackType.Melee;
-
-        r -= meleeScore;
-        if (r < rocketScore)
-            return Attack.AttackType.Rocket;
-
+        // 4) Out of gun range:
+        // We do not fire rockets here anymore; instead we move closer and use gun.
         return Attack.AttackType.AllyGun;
     }
 
-
     /// <summary>
-    /// Returns how far each attack type can reach.
+    /// Returns the effective attack range for each attack type.
+    /// Used for determining whether we should be in Attack or FollowLeader.
     /// </summary>
     private float GetRangeFor(Attack.AttackType type)
     {
@@ -190,7 +219,6 @@ public class AllyFSM : MonoBehaviour
             case Attack.AttackType.Rocket:
                 return Attack.RocketData.range;
             case Attack.AttackType.AllyGun:
-                return Attack.AllyGunData.range;
             default:
                 return Attack.AllyGunData.range;
         }

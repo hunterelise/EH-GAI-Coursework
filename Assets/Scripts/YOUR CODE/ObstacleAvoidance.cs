@@ -1,10 +1,14 @@
 using UnityEngine;
 
+/// <summary>
+/// Simple obstacle avoidance using the Map grid:
+/// looks ahead and sidesteps left/right if the next tile is blocked.
+/// </summary>
 public sealed class ObstacleAvoidance : SteeringBehaviour
 {
     public float lookAheadDistance = 1.2f;
     public float sideStepDistance = 1.0f;
-    public float avoidanceWeight = 1.0f;
+    public float avoidanceWeight = 0.7f;
 
     public override Vector3 UpdateBehaviour(SteeringAgent agent)
     {
